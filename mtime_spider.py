@@ -1,60 +1,10 @@
-# MTime_Spider动态爬虫
-
-用Chrome分析MTime的影评数据，在网页源码中没有发现票房等相关的数据，基本可以确定是JS动态加载。分析JS中的Ajax相关的文件，有这样的链接：
-```
-http://service.library.mtime.com/Movie.api?Ajax_CallBack=true&Ajax_CallBackType=Mtime.Library.Services&Ajax_CallBackMethod=GetMovieOverviewRating&Ajax_CrossDomain=1&Ajax_RequestUrl=http%3A%2F%2Fmovie.mtime.com%2F251494%2F&t=201849033474578&Ajax_CallBackArgument0=251494
-
-```
-我们可以看到评分和票房数据。
-
-找到链接后，我们需要知道如下两件事：
-### 1. 如何构造链接，参数的特征
-### 2. 如何提取响应的内容
-
-对比分析链接的规律：
-```
-http://service.library.mtime.com/Movie.api?Ajax_CallBack=true&Ajax_CallBackType=Mtime.Library.Services&Ajax_CallBackMethod=GetMovieOverviewRating&Ajax_CrossDomain=1&Ajax_RequestUrl=http%3A%2F%2Fmovie.mtime.com%2F251494%2F&t=201849033474578&Ajax_CallBackArgument0=251494
-
-
-http://service.library.mtime.com/Movie.api?Ajax_CallBack=true&Ajax_CallBackType=Mtime.Library.Services&Ajax_CallBackMethod=GetMovieOverviewRating&Ajax_CrossDomain=1&Ajax_RequestUrl=http%3A%2F%2Fmovie.mtime.com%2F234616%2F&t=20184910482249235&Ajax_CallBackArgument0=234616
-```
-
-分析异同，发现只有三个参数在变化：
-#### 1. Ajax\_RequestUrl 代表当前网页的链接
-#### 2. Ajax\_CallBackArgument0 代表链接后面的数字
-#### 3. t 时间戳
-
-下面我们看一下网页的响应内容。
-
-```
-正在上映有票房纪录
-var result_20184910482249235 = { "value":{"isRelease":true,"movieRating":{"MovieId":234616,"RatingFinal":7.5,"RDirectorFinal":7.7,"ROtherFinal":7.3,"RPictureFinal":7.5,"RShowFinal":0,"RStoryFinal":7.7,"RTotalFinal":0,"Usercount":460,"AttitudeCount":727,"UserId":0,"EnterTime":0,"JustTotal":0,"RatingCount":0,"TitleCn":"","TitleEn":"","Year":"","IP":0},"movieTitle":"暴裂无声","tweetId":0,"userLastComment":"","userLastCommentUrl":"","releaseType":1,"boxOffice":{"Rank":3,"TotalBoxOffice":"3679.0","TotalBoxOfficeUnit":"万","TodayBoxOffice":"79.3","TodayBoxOfficeUnit":"万","ShowDays":6,"EndDate":"2018-04-09 10:45","FirstDayBoxOffice":"804","FirstDayBoxOfficeUnit":"万"}},"error":null};var movieOverviewRatingResult=result_20184910482249235;
-
-即将上映
-var result_20184911404629761 = { "value":{"isRelease":true,"movieRating":{"MovieId":219782,"RatingFinal":5.7,"RDirectorFinal":5,"ROtherFinal":6,"RPictureFinal":6,"RShowFinal":0,"RStoryFinal":5.2,"RTotalFinal":0,"Usercount":144,"AttitudeCount":222,"UserId":0,"EnterTime":0,"JustTotal":0,"RatingCount":0,"TitleCn":"","TitleEn":"","Year":"","IP":0},"movieTitle":"夺命来电","tweetId":0,"userLastComment":"","userLastCommentUrl":"","releaseType":2,"boxOffice":{"Rank":0,"TotalBoxOffice":"0.0","TotalBoxOfficeUnit":"万","TodayBoxOffice":"0.0","TodayBoxOfficeUnit":"万","ShowDays":0,"EndDate":"2018-04-09 05:15"},"hotValue":{"MovieId":219782,"Ranking":5,"Changing":1,"YesterdayRanking":6}},"error":null};var movieOverviewRatingResult=result_20184911404629761;
-
-
-较长时间上映
-var result_20184911425171356 = { "value":{"isRelease":false,"movieRating":{"MovieId":211987,"RatingFinal":-1,"RDirectorFinal":0,"ROtherFinal":0,"RPictureFinal":0,"RShowFinal":0,"RStoryFinal":0,"RTotalFinal":0,"Usercount":36,"AttitudeCount":1197,"UserId":0,"EnterTime":0,"JustTotal":0,"RatingCount":0,"TitleCn":"","TitleEn":"","Year":"","IP":0},"movieTitle":"战神纪","tweetId":0,"userLastComment":"","userLastCommentUrl":"","releaseType":2,"hotValue":{"MovieId":211987,"Ranking":6,"Changing":-1,"YesterdayRanking":5}},"error":null};var movieOverviewRatingResult=result_20184911425171356;
-
-```
-这三种可以只是多了或者少了一些内容，加个try/except异常处理就可以。
-
-"="和";"之间是一个JSON格式，可以用**正则匹配**然后用`json`库解析。
-
-确定要提取的字段，
-MovieId, RatingFinal, RDirectorFinal, RPictureFinal,RStoryFinal,ROtherFinal,
-Usercount, AttitudeCount, movieTitle, Rank, TotalBoxOffice,TotalBoxOfficeUnit,
-TodayBoxOffice, TodayBoxOfficeUnit, ShowDays。
-
-接下来介绍，我们爬虫的架构。
-
-如下
-1. 网页下载 
-```python
-
 #coding: utf-8
+
 import requests
+import re
+import time
+import sqlite3
+import json
 
 class HtmlDownloader(object):
 	
@@ -68,11 +18,7 @@ class HtmlDownloader(object):
 			res.encoding='utf-8'
 			return res.text
 		return None
-```
 
-2. 网页解析 分为两部分，一个解析电影链接，一个解析动态加载的内容。
-
-```python
 class HtmlParser(object):		
 	def parser_url(self, page_url, response):
 		pattern = re.compile(r"(http://movie.mtime.com.(\d+)/)")
@@ -197,12 +143,10 @@ class HtmlParser(object):
 			u'无', Rank, 0, isRelease )
 		except Exception as e:
 			print(e, page_url, value)
-			return None
-```
+			return None 
+			
+		
 
-3. 数据存储器 主要包括连接数据库，建表，插入数据和关闭数据库等操作
-
-```python
 class DataOutput(object):
 	def __init__(self):
 		self.cx = sqlite3.connect("MTime.db")
@@ -269,11 +213,7 @@ class DataOutput(object):
 		if len(self.datas) > 0:
 			self.output_db("MTime")
 		self.cx.close()
-```
-
-
-4. 爬虫调度器- 协调上述模块,同时负责构造动态链接。
-```python
+		
 
 class SpiderMan(object):
 	def __init__(self):
@@ -314,11 +254,4 @@ class SpiderMan(object):
 if __name__ == "__main__":
 	spider = SpiderMan()
 	spider.crawl("http://theater.mtime.com/China_Beijing/")
-```
-
-详细的信息和相应的依赖库查看源代码
-在命令行运行`python mtime_spider.py`即可查看运行结果。
-命令行中数据`sqlite3 MTime.db`进入数据库，`SELECT * FORM MTime`查看数据是否正常插入。
-
-
-感谢你的时间, (~ ~) 
+	
